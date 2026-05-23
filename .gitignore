@@ -1,2 +1,3 @@
 __pycache__/
 local_products_fallback.json
+.streamlit/secrets.toml

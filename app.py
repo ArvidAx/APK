@@ -224,6 +224,84 @@ def get_systembolaget_url(row: pd.Series) -> str:
 
 # Caching utility helpers completed successfully.
 
+def query_groq_occasion(occasion: str) -> Dict[str, Any]:
+    """
+    Sends the user's occasion to Groq API and parses the recommended category and keyword filters.
+    """
+    # Read API key from Streamlit Secrets (set GROQ_API_KEY in .streamlit/secrets.toml or Streamlit Cloud)
+    api_key = st.secrets.get("GROQ_API_KEY", "")
+    if not api_key:
+        return {
+            "explanation": "AI-sökning är inte konfigurerad. Lägg till GROQ_API_KEY i .streamlit/secrets.toml för att aktivera denna funktion.",
+            "categories": [],
+            "keywords": [occasion],
+            "min_alc": 0.0,
+            "max_alc": 100.0,
+            "max_price": 99999.0
+        }
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    system_prompt = (
+        "Du är en expert på Systembolagets sortiment och dryckeskombinationer. "
+        "Användaren kommer ange ett tillfälle (t.ex. 'grilla', 'födelsedag', 'kräftskiva', 'billig förfest'). "
+        "Analysera detta tillfälle och returnera ett JSON-objekt med rekommenderade filter. "
+        "Svara uteslutande på svenska och svara med ett giltigt JSON-objekt utan extra text.\n\n"
+        "JSON-strukturen SKA ha exakt dessa nycklar:\n"
+        "{\n"
+        "  \"explanation\": \"En kort, inspirerande förklaring (1-2 meningar) till varför detta val passar tillfället.\",\n"
+        "  \"categories\": [\"Öl\", \"Vin\", \"Sprit\", \"Cider & blanddrycker\", \"Alkoholfritt\"],  // Lista över Huvudkategorier som passar tillfället (välj minst en, max tre av dessa exakta strängar)\n"
+        "  \"keywords\": [\"ipa\", \"lager\", \"rose\", \"bordeaux\", \"whisky\"], // En lista på 2-4 sökord på svenska eller dryckestermer för sökning i namn/subkategori\n"
+        "  \"min_alc\": 0.0, // Minimum alkoholhalt (float)\n"
+        "  \"max_alc\": 15.0, // Maximum alkoholhalt (float)\n"
+        "  \"max_price\": 1000.0 // Maximalt pris i SEK per produkt (float)\n"
+        "}"
+    )
+    
+    payload = {
+        "model": "llama3-8b-8192",
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Tillfälle: {occasion}"}
+        ],
+        "temperature": 0.5,
+        "max_tokens": 512
+    }
+    
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            res_json = response.json()
+            content = res_json["choices"][0]["message"]["content"]
+            parsed_data = json.loads(content)
+            
+            # Safe type validations
+            return {
+                "explanation": str(parsed_data.get("explanation") or "Här är några rekommendationer som passar tillfället."),
+                "categories": list(parsed_data.get("categories") or []),
+                "keywords": list(parsed_data.get("keywords") or []),
+                "min_alc": float(parsed_data.get("min_alc") or 0.0),
+                "max_alc": float(parsed_data.get("max_alc") or 100.0),
+                "max_price": float(parsed_data.get("max_price") or 99999.0)
+            }
+    except Exception as e:
+        logger.error(f"Groq API Error: {e}")
+        # Safe fallback
+        return {
+            "explanation": f"Kunde inte nå AI-tjänsten ({str(e)}). Visar resultat baserat på din sökning.",
+            "categories": [],
+            "keywords": [occasion],
+            "min_alc": 0.0,
+            "max_alc": 100.0,
+            "max_price": 99999.0
+        }
+
 
 @st.cache_data(ttl=86400)
 def load_data() -> pd.DataFrame:
@@ -353,14 +431,11 @@ def load_data() -> pd.DataFrame:
         except Exception as se:
             logger.warning(f"Failed to update local cache file on disk: {se}")
 
-    return df
-
-
-# Main execution flow
+ # Main execution flow
 try:
     df = load_data()
 except Exception as exc:
-    st.error("### Systemfel: Assortment kunde inte hämtas ⚠️")
+    st.error("### Systemfel: Assortment kunde inte hämtas")
     st.markdown(f"""
     Applikationen misslyckades med att hämta Systembolagets produktdata från API:t och kunde inte ladda en lokal backup.
     
@@ -463,136 +538,296 @@ search_query = st.sidebar.text_input(
     help="Sökningen matchar produktnamn, ytterligare beskrivning samt producentnamn skiftlägesoberoende."
 )
 
-# Apply filters
-filtered_df = df.copy()
+# Render main panel Tabs layout
+tab_standard, tab_ai = st.tabs(["Standardsök", "AI-tillfällessök"])
 
-# Dynamic Price & APK adjustment based on pant toggle
-if include_pant:
-    filtered_df["Display Price"] = filtered_df["price"] + filtered_df["Pant"]
-else:
-    filtered_df["Display Price"] = filtered_df["price"]
+with tab_standard:
+    # Apply filters
+    filtered_df = df.copy()
 
-# Recalculate APK dynamically on display price
-filtered_df["APK"] = (filtered_df["volume"] * (filtered_df["alcoholPercentage"] / 100.0)) / filtered_df["Display Price"]
-filtered_df["APK"] = filtered_df["APK"].round(4)
+    # Dynamic Price & APK adjustment based on pant toggle
+    if include_pant:
+        filtered_df["Display Price"] = filtered_df["price"] + filtered_df["Pant"]
+    else:
+        filtered_df["Display Price"] = filtered_df["price"]
 
-# Filter 1: Main Category
-if selected_categories:
-    filtered_df = filtered_df[filtered_df["Main Category"].isin(selected_categories)]
+    # Recalculate APK dynamically on display price
+    filtered_df["APK"] = (filtered_df["volume"] * (filtered_df["alcoholPercentage"] / 100.0)) / filtered_df["Display Price"]
+    filtered_df["APK"] = filtered_df["APK"].round(4)
 
-# Filter 2: Order Assortment
-if not show_order_items:
-    filtered_df = filtered_df[filtered_df["IsOrderAssortment"] == False]
+    # Filter 1: Main Category
+    if selected_categories:
+        filtered_df = filtered_df[filtered_df["Main Category"].isin(selected_categories)]
 
-# Filter 3: Alcohol Range
-filtered_df = filtered_df[
-    (filtered_df["alcoholPercentage"] >= selected_alc[0]) & 
-    (filtered_df["alcoholPercentage"] <= selected_alc[1])
-]
+    # Filter 2: Order Assortment
+    if not show_order_items:
+        filtered_df = filtered_df[filtered_df["IsOrderAssortment"] == False]
 
-# Filter 4: Price Range (using mapped exponential values)
-filtered_df = filtered_df[
-    (filtered_df["price"] >= selected_price_low) & 
-    (filtered_df["price"] <= selected_price_high)
-]
-
-# Filter 5: Search Query
-if search_query:
-    q = search_query.strip().lower()
+    # Filter 3: Alcohol Range
     filtered_df = filtered_df[
-        filtered_df["Name"].str.lower().str.contains(q, na=False) |
-        filtered_df["Producer"].str.lower().str.contains(q, na=False)
+        (filtered_df["alcoholPercentage"] >= selected_alc[0]) & 
+        (filtered_df["alcoholPercentage"] <= selected_alc[1])
     ]
 
-# Sort explicitly by the newly calculated APK
-filtered_df = filtered_df.sort_values(by="APK", ascending=False).reset_index(drop=True)
-filtered_df["Rank"] = filtered_df.index + 1
+    # Filter 4: Price Range (using mapped exponential values)
+    filtered_df = filtered_df[
+        (filtered_df["price"] >= selected_price_low) & 
+        (filtered_df["price"] <= selected_price_high)
+    ]
 
-# Render KPI Top 3 cards based on active filtered dataset (Clean minimal layout)
-st.markdown("### Mest prisvärda produkter")
-if not filtered_df.empty:
-    top_3 = filtered_df.head(3)
-    
-    # HTML KPI Columns container
-    kpi_cols = st.columns(3)
-    medals = ["Rank 1", "Rank 2", "Rank 3"]
-    classes = ["gold", "silver", "bronze"]
-    
-    for idx in range(3):
-        with kpi_cols[idx]:
-            if idx < len(top_3):
-                row = top_3.iloc[idx]
-                
-                # Format price label showing pant context
-                p_pant = row["Pant"]
-                p_display = row["Display Price"]
-                if p_pant > 0 and include_pant:
-                    price_label = f"{p_display:.2f} kr (inkl. {p_pant:.2f} kr pant)"
-                elif p_pant > 0:
-                    price_label = f"{p_display:.2f} kr (+{p_pant:.2f} kr pant)"
-                else:
-                    price_label = f"{p_display:.2f} kr"
-                
-                st.markdown(f"""
-                <div class="kpi-card {classes[idx]}">
-                    <div class="kpi-title">{medals[idx]} • {row['Main Category']}</div>
-                    <div class="kpi-name" title="{row['Name']}">{row['Name']}</div>
-                    <div class="kpi-value">{row['APK']:.4f} <span class="kpi-value-unit">ml/SEK</span></div>
-                    <div class="kpi-meta">
-                        <span class="kpi-badge">{row['volume']:.0f} ml</span>
-                        <span class="kpi-badge">{row['alcoholPercentage']:.1f}% vol</span>
-                        <span class="kpi-badge">{price_label}</span>
+    # Filter 5: Search Query
+    if search_query:
+        q = search_query.strip().lower()
+        filtered_df = filtered_df[
+            filtered_df["Name"].str.lower().str.contains(q, na=False) |
+            filtered_df["Producer"].str.lower().str.contains(q, na=False)
+        ]
+
+    # Sort explicitly by the newly calculated APK
+    filtered_df = filtered_df.sort_values(by="APK", ascending=False).reset_index(drop=True)
+    filtered_df["Rank"] = filtered_df.index + 1
+
+    # Render KPI Top 3 cards based on active filtered dataset (Clean minimal layout)
+    st.markdown("### Mest prisvärda produkter")
+    if not filtered_df.empty:
+        top_3 = filtered_df.head(3)
+        
+        # HTML KPI Columns container
+        kpi_cols = st.columns(3)
+        medals = ["Rank 1", "Rank 2", "Rank 3"]
+        classes = ["gold", "silver", "bronze"]
+        
+        for idx in range(3):
+            with kpi_cols[idx]:
+                if idx < len(top_3):
+                    row = top_3.iloc[idx]
+                    
+                    # Format price label showing pant context
+                    p_pant = row["Pant"]
+                    p_display = row["Display Price"]
+                    if p_pant > 0 and include_pant:
+                        price_label = f"{p_display:.2f} kr (inkl. {p_pant:.2f} kr pant)"
+                    elif p_pant > 0:
+                        price_label = f"{p_display:.2f} kr (+{p_pant:.2f} kr pant)"
+                    else:
+                        price_label = f"{p_display:.2f} kr"
+                    
+                    st.markdown(f"""
+                    <div class="kpi-card {classes[idx]}">
+                        <div class="kpi-title">{medals[idx]} • {row['Main Category']}</div>
+                        <div class="kpi-name" title="{row['Name']}">{row['Name']}</div>
+                        <div class="kpi-value">{row['APK']:.4f} <span class="kpi-value-unit">ml/SEK</span></div>
+                        <div class="kpi-meta">
+                            <span class="kpi-badge">{row['volume']:.0f} ml</span>
+                            <span class="kpi-badge">{row['alcoholPercentage']:.1f}% vol</span>
+                            <span class="kpi-badge">{price_label}</span>
+                        </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.markdown(f"""
-                <div class="kpi-card" style="border-left-color: rgba(255, 255, 255, 0.05); opacity: 0.4;">
-                    <div class="kpi-title">{medals[idx]}</div>
-                    <div class="kpi-name">-</div>
-                    <div class="kpi-value">N/A</div>
-                    <div class="kpi-meta">-</div>
-                </div>
-                """, unsafe_allow_html=True)
-else:
-    st.info("Hittade inga produkter med nuvarande filterinställningar.")
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div class="kpi-card" style="border-left-color: rgba(255, 255, 255, 0.05); opacity: 0.4;">
+                        <div class="kpi-title">{medals[idx]}</div>
+                        <div class="kpi-name">-</div>
+                        <div class="kpi-value">N/A</div>
+                        <div class="kpi-meta">-</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+    else:
+        st.info("Hittade inga produkter med nuvarande filterinställningar.")
 
-# Main Interactive Dataframe View
-st.markdown("### Sortiment")
-if not filtered_df.empty:
-    # Prepare clean presentation schema
-    display_df = pd.DataFrame({
-        "Rank": filtered_df["Rank"],
-        "Name": filtered_df["Name"],
-        "Main Category": filtered_df["Main Category"],
-        "Subcategory": filtered_df["Subcategory"],
-        "Price (SEK)": filtered_df["Display Price"],
-        "Pant (SEK)": filtered_df["Pant"],
-        "Volume (ml)": filtered_df["volume"],
-        "Alcohol %": filtered_df["alcoholPercentage"],
-        "APK (ml/SEK)": filtered_df["APK"],
-        "Order Assortment (Yes/No)": filtered_df["Order Assortment"],
-        "Systembolaget": filtered_df["SystembolagetURL"]
-    })
+    # Main Interactive Dataframe View
+    st.markdown("### Sortiment")
+    if not filtered_df.empty:
+        # Prepare clean presentation schema
+        display_df = pd.DataFrame({
+            "Rank": filtered_df["Rank"],
+            "Name": filtered_df["Name"],
+            "Main Category": filtered_df["Main Category"],
+            "Subcategory": filtered_df["Subcategory"],
+            "Price (SEK)": filtered_df["Display Price"],
+            "Pant (SEK)": filtered_df["Pant"],
+            "Volume (ml)": filtered_df["volume"],
+            "Alcohol %": filtered_df["alcoholPercentage"],
+            "APK (ml/SEK)": filtered_df["APK"],
+            "Order Assortment (Yes/No)": filtered_df["Order Assortment"],
+            "Systembolaget": filtered_df["SystembolagetURL"]
+        })
 
-    # Render optimized st.dataframe
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Rank": st.column_config.NumberColumn("Rank", format="#%d"),
-            "Price (SEK)": st.column_config.NumberColumn(
-                "Pris inkl. pant (SEK)" if include_pant else "Pris exkl. pant (SEK)", 
-                format="%.2f kr"
-            ),
-            "Pant (SEK)": st.column_config.NumberColumn("Pant", format="%.2f kr"),
-            "Volume (ml)": st.column_config.NumberColumn("Volym (ml)", format="%d ml"),
-            "Alcohol %": st.column_config.NumberColumn("Alkoholhalt (%)", format="%.1f%%"),
-            "APK (ml/SEK)": st.column_config.NumberColumn("APK (ml/SEK)", format="%.4f"),
-            "Systembolaget": st.column_config.LinkColumn("Systembolaget ↗", display_text="Visa produkt ↗")
-        }
+        # Render optimized st.dataframe
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Rank": st.column_config.NumberColumn("Rank", format="#%d"),
+                "Price (SEK)": st.column_config.NumberColumn(
+                    "Pris inkl. pant (SEK)" if include_pant else "Pris exkl. pant (SEK)", 
+                    format="%.2f kr"
+                ),
+                "Pant (SEK)": st.column_config.NumberColumn("Pant", format="%.2f kr"),
+                "Volume (ml)": st.column_config.NumberColumn("Volym (ml)", format="%d ml"),
+                "Alcohol %": st.column_config.NumberColumn("Alkoholhalt (%)", format="%.1f%%"),
+                "APK (ml/SEK)": st.column_config.NumberColumn("APK (ml/SEK)", format="%.4f"),
+                "Systembolaget": st.column_config.LinkColumn("Systembolaget ↗", display_text="Visa produkt ↗")
+            }
+        )
+    else:
+        st.warning("Justera dina filter i kontrollpanelen för att visa resultat.")
+
+with tab_ai:
+    st.markdown("### Hitta rätt dryck för rätt tillfälle")
+    st.markdown(
+        "Beskriv tillfället du planerar för (t.ex. *födelsedag på budget*, *sommarpicknick*, *finmiddag med skaldjur*) "
+        "så väljer vår AI ut de mest passande dryckeskategorierna och sökorden, filtrerar sortimentet och sorterar dem efter APK."
     )
+    
+    # Text input
+    occasion_input = st.text_input(
+        "Beskriv tillfället här:",
+        placeholder="T.ex. Grillkväll med kompisar, kräftskiva, lyxig present...",
+        key="ai_occasion_input"
+    )
+    
+    run_ai = st.button("Hitta passande dryck", key="ai_run_button")
+    
+    if run_ai or st.session_state.get("ai_results"):
+        if run_ai and occasion_input:
+            with st.spinner("AI-analys pågår..."):
+                ai_results = query_groq_occasion(occasion_input)
+                st.session_state["ai_results"] = ai_results
+                st.session_state["ai_query"] = occasion_input
+        
+        # Display results if available
+        ai_res = st.session_state.get("ai_results")
+        if ai_res:
+            st.markdown("---")
+            st.markdown(f"#### AI-analys för tillfälle: *\"{st.session_state.get('ai_query')}\"*")
+            st.info(ai_res["explanation"])
+            
+            # Apply AI filters
+            ai_df = df.copy()
+            
+            # Dynamic Price & APK adjustment based on pant toggle
+            if include_pant:
+                ai_df["Display Price"] = ai_df["price"] + ai_df["Pant"]
+            else:
+                ai_df["Display Price"] = ai_df["price"]
 
-else:
-    st.warning("Justera dina filter i kontrollpanelen för att visa resultat.")
+            # Recalculate APK dynamically
+            ai_df["APK"] = (ai_df["volume"] * (ai_df["alcoholPercentage"] / 100.0)) / ai_df["Display Price"]
+            ai_df["APK"] = ai_df["APK"].round(4)
+            
+            # Apply AI categories
+            if ai_res["categories"]:
+                ai_df = ai_df[ai_df["Main Category"].isin(ai_res["categories"])]
+                
+            # Apply AI alcohol range
+            ai_df = ai_df[
+                (ai_df["alcoholPercentage"] >= ai_res["min_alc"]) & 
+                (ai_df["alcoholPercentage"] <= ai_res["max_alc"])
+            ]
+            
+            # Apply AI price range
+            ai_df = ai_df[ai_df["price"] <= ai_res["max_price"]]
+            
+            # Apply AI keywords OR search
+            if ai_res["keywords"]:
+                import re
+                cleaned_kw = [re.escape(k.strip()) for k in ai_res["keywords"] if k.strip()]
+                if cleaned_kw:
+                    pattern = "|".join(cleaned_kw)
+                    ai_df = ai_df[
+                        ai_df["Name"].str.lower().str.contains(pattern, na=False) |
+                        ai_df["Subcategory"].str.lower().str.contains(pattern, na=False) |
+                        ai_df["Producer"].str.lower().str.contains(pattern, na=False) |
+                        ai_df["Main Category"].str.lower().str.contains(pattern, na=False)
+                    ]
+            
+            # Sort explicitly by APK descending
+            ai_df = ai_df.sort_values(by="APK", ascending=False).reset_index(drop=True)
+            ai_df["Rank"] = ai_df.index + 1
+            
+            # Display results
+            if not ai_df.empty:
+                st.markdown("##### AI-rekommenderade produkter sorterade efter APK")
+                
+                # Render top 3 metric cards for AI view
+                ai_top_3 = ai_df.head(3)
+                ai_cols = st.columns(3)
+                medals = ["Rank 1", "Rank 2", "Rank 3"]
+                classes = ["gold", "silver", "bronze"]
+                
+                for idx in range(3):
+                    with ai_cols[idx]:
+                        if idx < len(ai_top_3):
+                            row = ai_top_3.iloc[idx]
+                            
+                            # Format price label showing pant context
+                            p_pant = row["Pant"]
+                            p_display = row["Display Price"]
+                            if p_pant > 0 and include_pant:
+                                price_label = f"{p_display:.2f} kr (inkl. {p_pant:.2f} kr pant)"
+                            elif p_pant > 0:
+                                price_label = f"{p_display:.2f} kr (+{p_pant:.2f} kr pant)"
+                            else:
+                                price_label = f"{p_display:.2f} kr"
+                            
+                            st.markdown(f"""
+                            <div class="kpi-card {classes[idx]}">
+                                <div class="kpi-title">{medals[idx]} • {row['Main Category']}</div>
+                                <div class="kpi-name" title="{row['Name']}">{row['Name']}</div>
+                                <div class="kpi-value">{row['APK']:.4f} <span class="kpi-value-unit">ml/SEK</span></div>
+                                <div class="kpi-meta">
+                                    <span class="kpi-badge">{row['volume']:.0f} ml</span>
+                                    <span class="kpi-badge">{row['alcoholPercentage']:.1f}% vol</span>
+                                    <span class="kpi-badge">{price_label}</span>
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"""
+                            <div class="kpi-card" style="border-left-color: rgba(255, 255, 255, 0.05); opacity: 0.4;">
+                                <div class="kpi-title">{medals[idx]}</div>
+                                <div class="kpi-name">-</div>
+                                <div class="kpi-value">N/A</div>
+                                <div class="kpi-meta">-</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Display table
+                ai_display_df = pd.DataFrame({
+                    "Rank": ai_df["Rank"],
+                    "Name": ai_df["Name"],
+                    "Main Category": ai_df["Main Category"],
+                    "Subcategory": ai_df["Subcategory"],
+                    "Price (SEK)": ai_df["Display Price"],
+                    "Pant (SEK)": ai_df["Pant"],
+                    "Volume (ml)": ai_df["volume"],
+                    "Alcohol %": ai_df["alcoholPercentage"],
+                    "APK (ml/SEK)": ai_df["APK"],
+                    "Order Assortment (Yes/No)": ai_df["Order Assortment"],
+                    "Systembolaget": ai_df["SystembolagetURL"]
+                })
+                
+                st.dataframe(
+                    ai_display_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Rank": st.column_config.NumberColumn("Rank", format="#%d"),
+                        "Price (SEK)": st.column_config.NumberColumn(
+                            "Pris inkl. pant (SEK)" if include_pant else "Pris exkl. pant (SEK)", 
+                            format="%.2f kr"
+                        ),
+                        "Pant (SEK)": st.column_config.NumberColumn("Pant", format="%.2f kr"),
+                        "Volume (ml)": st.column_config.NumberColumn("Volym (ml)", format="%d ml"),
+                        "Alcohol %": st.column_config.NumberColumn("Alkoholhalt (%)", format="%.1f%%"),
+                        "APK (ml/SEK)": st.column_config.NumberColumn("APK (ml/SEK)", format="%.4f"),
+                        "Systembolaget": st.column_config.LinkColumn("Systembolaget ↗", display_text="Visa produkt ↗")
+                    }
+                )
+            else:
+                st.warning("Hittade inga produkter som matchar AI-sökningens filter. Försök att beskriva tillfället med andra ord.")
