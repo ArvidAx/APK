@@ -197,6 +197,7 @@ Du MÅSTE svara med ett giltigt JSON-objekt med exakt denna struktur:
 {
   "explanation": "En kort, inspirerande förklaring på svenska om varför rekommendationerna passar tillfället (max 2 meningar).",
   "categories": ["kategori1", "kategori2"],
+  "subcategories": ["underkategori1", "underkategori2"],
   "keywords": ["sökord1", "sökord2"],
   "min_alc": null,
   "max_alc": null,
@@ -206,6 +207,7 @@ Du MÅSTE svara med ett giltigt JSON-objekt med exakt denna struktur:
 
 Viktiga regler för fälten:
 - 'categories' MÅSTE vara en lista av noll eller flera av dessa exakta svenska kategorinamn: "Öl", "Vin", "Sprit", "Cider & blanddrycker", "Alkoholfritt", "Presenter". Om alla kategorier passar, returnera en tom lista [].
+- 'subcategories' MÅSTE vara en lista av noll eller flera passande svenska underkategorier (t.ex. "Akvavit & Kryddat brännvin", "Ljus lager", "IPA", "Cider", "Rött vin", "Champagne", "Maltwhisky"). Föreslå gärna flera passande underkategorier för att täcka in rätt sortiment (t.ex. för snaps/nubbe kan du föreslå både "Akvavit & Kryddat brännvin" och "Kryddat brännvin"). Om alla underkategorier passar, returnera en tom lista [].
 - 'keywords' MÅSTE vara en lista med 2 till 5 korta, relevanta sökord på svenska i singular och gemener (t.ex. "ipa", "lager", "fruktigt", "kryddigt", "snaps", "champagne", "bordeaux", "friskt", "sommar") för att söka i produktnamn, underkategori eller producent.
 - 'max_price': Sätt alltid till null om inte budget/pris nämns.
 - 'min_alc' och 'max_alc': Sätt alltid till null om inte styrka/alkoholhalt nämns.
@@ -448,6 +450,11 @@ def run_ai_search():
             ai_result["categories"] = ["Sprit"]
             ai_result["min_alc"] = None
             ai_result["max_alc"] = None
+            
+            # Snap/Nubbe specific subcategory override
+            snaps_indicators = ["snaps", "nubbe", "snapsar", "nubbar"]
+            if any(ind in user_input.lower() for ind in snaps_indicators):
+                ai_result["subcategories"] = ["Akvavit & Kryddat brännvin", "Kryddat brännvin"]
         else:
             if not has_alc_request:
                 ai_result["min_alc"] = None
@@ -571,6 +578,22 @@ if st.session_state.ai_filters:
         if has_valid_kw:
             filtered_df = filtered_df[keyword_mask]
             
+    # Filter by AI subcategories if specified (OR check for case-insensitive substrings)
+    ai_subcategories = ai_f.get("subcategories", [])
+    if ai_subcategories:
+        sub_mask = pd.Series(False, index=filtered_df.index)
+        has_valid_sub = False
+        for sub_term in ai_subcategories:
+            sub_term_clean = str(sub_term).strip().lower()
+            if not sub_term_clean:
+                continue
+            has_valid_sub = True
+            match_sub = filtered_df["Subcategory"].str.lower().str.contains(sub_term_clean, na=False)
+            sub_mask = sub_mask | match_sub
+            
+        if has_valid_sub:
+            filtered_df = filtered_df[sub_mask]
+            
     # Filter by AI min APK if present
     min_apk = ai_f.get("min_apk")
     if min_apk is not None:
@@ -649,6 +672,7 @@ with st.container():
             <div style="font-size: 0.95rem; color: #e2e8f0; line-height: 1.5; margin-bottom: 0.75rem;">{ai_f.get('explanation', '')}</div>
             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                 <span style="background-color: #064e3b; color: #a7f3d0; border: 1px solid #047857; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Kategorier: {", ".join(ai_f.get('categories', [])) if ai_f.get('categories') else 'Alla'}</span>
+                {f'<span style="background-color: #0d9488; color: #ccfbf1; border: 1px solid #0f766e; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Underkategorier: {", ".join(ai_f.get("subcategories", []))}</span>' if ai_f.get("subcategories") else ''}
                 {" ".join([f'<span style="background-color: #1e3a8a; color: #dbeafe; border: 1px solid #1d4ed8; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Nyckelord: {kw}</span>' for kw in ai_f.get('keywords', [])])}
                 {f'<span style="background-color: #701a75; color: #fdf4ff; border: 1px solid #a21caf; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Alkoholhalt: {ai_f.get("min_alc") or 0}% - {ai_f.get("max_alc") or 100}%</span>' if (ai_f.get("min_alc") or ai_f.get("max_alc")) else ''}
                 {f'<span style="background-color: #7c2d12; color: #ffedd5; border: 1px solid #c2410c; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Maxpris: {ai_f.get("max_price")} kr</span>' if ai_f.get("max_price") else ''}
