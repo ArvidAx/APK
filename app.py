@@ -168,6 +168,71 @@ def get_systembolaget_url(row: pd.Series) -> str:
     return f"https://www.systembolaget.se/produkt/{cat_slug}/{name_slug}-{prod_num}/"
 
 
+def query_groq_occasion(user_prompt: str) -> dict:
+    """
+    Queries the Groq API using Llama 3 (llama3-8b-8192) to get structured recommendations
+    for the user's occasion.
+    """
+    api_key = st.secrets.get("GROQ_API_KEY", "") or os.environ.get("GROQ_API_KEY", "")
+    if not api_key:
+        logger.error("Groq API key not found in secrets or environment.")
+        return {
+            "error": "Groq API-nyckel saknas. Lägg till GROQ_API_KEY i .streamlit/secrets.toml för att använda AI-sök."
+        }
+        
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    system_prompt = """Du är en expert-sommelier för Systembolagets sortiment. Din uppgift är att analysera användarens tillfälle och ge förslag på passande drycker.
+
+Du MÅSTE svara med ett giltigt JSON-objekt med exakt denna struktur:
+{
+  "explanation": "En kort, inspirerande förklaring på svenska om varför rekommendationerna passar tillfället (max 2 meningar).",
+  "categories": ["kategori1", "kategori2"],
+  "keywords": ["sökord1", "sökord2"],
+  "min_alc": 4.5,
+  "max_alc": 15.0,
+  "max_price": 250.0,
+  "min_apk": null
+}
+
+Regler för fälten:
+- 'categories' MÅSTE vara en lista av noll eller flera av dessa exakta svenska kategorinamn: "Öl", "Vin", "Sprit", "Cider & blanddrycker", "Alkoholfritt", "Presenter". Om alla kategorier passar, returnera en tom lista [].
+- 'keywords' MÅSTE vara en lista med 2 till 5 korta, relevanta sökord på svenska i singular och gemener (t.ex. "ipa", "lager", "fruktigt", "kryddigt", "snaps", "champagne", "bordeaux", "friskt", "sommar") för att söka i produktnamn, underkategori eller producent.
+- 'min_alc' och 'max_alc' begränsar alkoholhalten i % (t.ex. 4.5 till 12.5). Sätt till null om ingen gräns finns.
+- 'max_price' begränsar priset per flaska/burk i SEK. Sätt till null om ingen gräns finns.
+- 'min_apk' begränsar minsta APK om användaren explicit ber om budget, mest alkohol för pengarna osv. Annars null.
+"""
+
+    payload = {
+        "model": "llama3-8b-8192",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Tillfälle: {user_prompt}"}
+        ],
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"}
+    }
+    
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            res_json = response.json()
+            content = res_json["choices"][0]["message"]["content"]
+            result = json.loads(content)
+            return result
+    except httpx.HTTPStatusError as he:
+        logger.error(f"Groq API error: {he.response.status_code} - {he.response.text}")
+        return {"error": f"Groq API returnerade felkod {he.response.status_code}."}
+    except Exception as e:
+        logger.error(f"Failed to query Groq: {e}")
+        return {"error": f"Det gick inte att kontakta AI-tjänsten: {str(e)}"}
+
+
 @st.cache_data(ttl=86400)
 def load_data() -> pd.DataFrame:
     """
@@ -297,6 +362,57 @@ except Exception as exc:
 if df is None:
     st.stop()
 
+# Prepare filter bounds and options
+categories = sorted(df["Main Category"].unique().tolist())
+default_cats = [c for c in ["Öl", "Sprit"] if c in categories]
+
+min_alc_val = float(df["alcoholPercentage"].min())
+max_alc_val = float(df["alcoholPercentage"].max())
+
+min_price_val = int(df["price"].min())
+max_price_val = int(df["price"].max())
+options_under_1000 = list(range(min_price_val, min(1000, max_price_val) + 1, 5))
+if min_price_val not in options_under_1000:
+    options_under_1000.insert(0, min_price_val)
+if max_price_val > 1000:
+    options_above_1000 = list(range(1000, min(5000, max_price_val) + 1, 50))
+    if max_price_val > 5000:
+        options_above_1000 += list(range(5000, max_price_val + 1, 250))
+    if max_price_val not in options_above_1000:
+        options_above_1000.append(max_price_val)
+    price_options = sorted(set(options_under_1000 + options_above_1000))
+else:
+    price_options = sorted(set(options_under_1000))
+
+default_high = min(500, price_options[-1]) if price_options[-1] > 500 else price_options[-1]
+if default_high not in price_options:
+    default_high = min(price_options, key=lambda x: abs(x - default_high))
+
+# Initialize session state variables for AI Occasion Finder
+if "ai_occasion" not in st.session_state:
+    st.session_state.ai_occasion = None
+if "ai_filters" not in st.session_state:
+    st.session_state.ai_filters = None
+if "ai_error" not in st.session_state:
+    st.session_state.ai_error = None
+
+# Initialize session state for sidebar filter widgets to allow programmatic override
+if "sb_categories" not in st.session_state:
+    st.session_state.sb_categories = default_cats
+if "sb_alc" not in st.session_state:
+    st.session_state.sb_alc = (min_alc_val, max_alc_val)
+if "sb_price" not in st.session_state:
+    st.session_state.sb_price = (price_options[0], default_high)
+
+# Helper function to reset AI filters and restore defaults
+def reset_ai_search():
+    st.session_state.ai_occasion = None
+    st.session_state.ai_filters = None
+    st.session_state.ai_error = None
+    st.session_state.sb_categories = default_cats
+    st.session_state.sb_alc = (min_alc_val, max_alc_val)
+    st.session_state.sb_price = (price_options[0], default_high)
+
 # ─── Header ──────────────────────────────────────────────────────────────────
 st.title("Systembolaget APK-Analysator")
 today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -317,12 +433,10 @@ include_pant = st.sidebar.toggle(
     help="Burkar, PET-flaskor och returglas har pant i Sverige. Aktivera för att räkna APK på totalpriset."
 )
 
-categories = sorted(df["Main Category"].unique().tolist())
-default_cats = [c for c in ["Öl", "Sprit"] if c in categories]
 selected_categories = st.sidebar.multiselect(
     "Välj kategorier",
     options=categories,
-    default=default_cats,
+    key="sb_categories"
 )
 
 show_order_items = st.sidebar.checkbox(
@@ -330,42 +444,20 @@ show_order_items = st.sidebar.checkbox(
     value=False,
 )
 
-min_alc_val = float(df["alcoholPercentage"].min())
-max_alc_val = float(df["alcoholPercentage"].max())
 selected_alc = st.sidebar.slider(
     "Alkoholhalt (%)",
     min_value=min_alc_val,
     max_value=max_alc_val,
-    value=(min_alc_val, max_alc_val),
     step=0.5,
-    format="%.1f%%"
+    format="%.1f%%",
+    key="sb_alc"
 )
-
-# Exponential price slider
-min_price_val = int(df["price"].min())
-max_price_val = int(df["price"].max())
-options_under_1000 = list(range(min_price_val, min(1000, max_price_val) + 1, 5))
-if min_price_val not in options_under_1000:
-    options_under_1000.insert(0, min_price_val)
-if max_price_val > 1000:
-    options_above_1000 = list(range(1000, min(5000, max_price_val) + 1, 50))
-    if max_price_val > 5000:
-        options_above_1000 += list(range(5000, max_price_val + 1, 250))
-    if max_price_val not in options_above_1000:
-        options_above_1000.append(max_price_val)
-    price_options = sorted(set(options_under_1000 + options_above_1000))
-else:
-    price_options = sorted(set(options_under_1000))
-
-default_high = min(500, price_options[-1]) if price_options[-1] > 500 else price_options[-1]
-if default_high not in price_options:
-    default_high = min(price_options, key=lambda x: abs(x - default_high))
 
 selected_price_low, selected_price_high = st.sidebar.select_slider(
     "Pris (SEK)",
     options=price_options,
-    value=(price_options[0], default_high),
-    format_func=lambda val: f"{val} kr"
+    format_func=lambda val: f"{val} kr",
+    key="sb_price"
 )
 
 search_query = st.sidebar.text_input(
@@ -375,6 +467,35 @@ search_query = st.sidebar.text_input(
 
 # ─── Apply filters ────────────────────────────────────────────────────────────
 filtered_df = df.copy()
+
+# Apply AI keyword and deep filters first if active
+if st.session_state.ai_filters:
+    ai_f = st.session_state.ai_filters
+    
+    # Filter by AI keywords in name, subcategory, or producer (OR search)
+    ai_keywords = ai_f.get("keywords", [])
+    if ai_keywords:
+        keyword_mask = pd.Series(False, index=filtered_df.index)
+        has_valid_kw = False
+        for kw in ai_keywords:
+            kw_clean = str(kw).strip().lower()
+            if not kw_clean:
+                continue
+            has_valid_kw = True
+            name_match = filtered_df["Name"].str.lower().str.contains(kw_clean, na=False)
+            sub_match = filtered_df["Subcategory"].str.lower().str.contains(kw_clean, na=False)
+            prod_match = filtered_df["Producer"].str.lower().str.contains(kw_clean, na=False)
+            keyword_mask = keyword_mask | name_match | sub_match | prod_match
+        if has_valid_kw:
+            filtered_df = filtered_df[keyword_mask]
+            
+    # Filter by AI min APK if present
+    min_apk = ai_f.get("min_apk")
+    if min_apk is not None:
+        try:
+            filtered_df = filtered_df[filtered_df["APK"] >= float(min_apk)]
+        except ValueError:
+            pass
 
 filtered_df["Display Price"] = filtered_df["price"] + filtered_df["Pant"] if include_pant else filtered_df["price"]
 filtered_df["APK"] = (filtered_df["volume"] * (filtered_df["alcoholPercentage"] / 100.0)) / filtered_df["Display Price"]
@@ -405,6 +526,95 @@ if search_query:
 
 filtered_df = filtered_df.sort_values(by="APK", ascending=False).reset_index(drop=True)
 filtered_df["Rank"] = filtered_df.index + 1
+
+# ─── AI Occasion Finder UI ────────────────────────────────────────────────────
+st.markdown("---")
+with st.container():
+    st.markdown("### 🤖 Sök dryck med AI")
+    st.markdown(
+        "Beskriv vad du ska nyttja drycken till (t.ex. *grillkväll med ryggbiff*, "
+        "*sommarpicknick i parken*, *kräftskiva* eller *studentfest på budget*). "
+        "En AI ger förslag på kategorier, sökord och alkoholhalt anpassade för tillfället, "
+        "vilka sedan sorteras efter APK."
+    )
+    
+    col_input, col_btn = st.columns([4, 1])
+    with col_input:
+        ai_input = st.text_input(
+            "Beskriv tillfället:",
+            placeholder="T.ex. grillfest, kräftskiva, fira födelsedag, budgetförfest...",
+            label_visibility="collapsed",
+            key="ai_input_val"
+        )
+    with col_btn:
+        search_clicked = st.button("Hitta med AI ⚡", use_container_width=True)
+
+    if search_clicked and ai_input.strip():
+        with st.spinner("AI-sommelieren analyserar tillfället..."):
+            ai_result = query_groq_occasion(ai_input.strip())
+            
+            if "error" in ai_result:
+                st.session_state.ai_error = ai_result["error"]
+                st.session_state.ai_filters = None
+                st.session_state.ai_occasion = None
+            else:
+                st.session_state.ai_filters = ai_result
+                st.session_state.ai_occasion = ai_input.strip()
+                st.session_state.ai_error = None
+                
+                # Apply filters programmatically to sidebar widgets
+                ai_cats = ai_result.get("categories", [])
+                valid_cats = [c for c in ai_cats if c in categories]
+                if valid_cats:
+                    st.session_state.sb_categories = valid_cats
+                else:
+                    st.session_state.sb_categories = categories
+                    
+                min_a = ai_result.get("min_alc")
+                max_a = ai_result.get("max_alc")
+                min_val = float(min_alc_val)
+                max_val = float(max_alc_val)
+                min_a_f = max(min_val, float(min_a)) if min_a is not None else min_val
+                max_a_f = min(max_val, float(max_a)) if max_a is not None else max_val
+                st.session_state.sb_alc = (min_a_f, max_a_f)
+                
+                max_p = ai_result.get("max_price")
+                if max_p is not None:
+                    max_p_float = float(max_p)
+                    closest_max = min(price_options, key=lambda x: abs(x - max_p_float))
+                    st.session_state.sb_price = (price_options[0], closest_max)
+                
+                st.rerun()
+
+    # Display errors if any
+    if st.session_state.ai_error:
+        st.error(st.session_state.ai_error)
+        if st.button("Rensa felmeddelande"):
+            st.session_state.ai_error = None
+            st.rerun()
+
+    # Display active AI search details and explanation
+    if st.session_state.ai_filters:
+        ai_f = st.session_state.ai_filters
+        st.markdown(f"""
+        <div style="background-color: #111827; border: 1px solid #1f2937; border-left: 4px solid #10b981; border-radius: 8px; padding: 1rem; margin-top: 1rem; margin-bottom: 1rem;">
+            <div style="font-size: 0.8rem; font-weight: 600; color: #10b981; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;">🤖 AI-Sommelier Rekommendation</div>
+            <div style="font-size: 1.1rem; font-weight: 600; color: #ffffff; margin-bottom: 0.5rem;">Tillfälle: "{st.session_state.ai_occasion}"</div>
+            <div style="font-size: 0.95rem; color: #e2e8f0; line-height: 1.5; margin-bottom: 0.75rem;">{ai_f.get('explanation', '')}</div>
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <span style="background-color: #064e3b; color: #a7f3d0; border: 1px solid #047857; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Kategorier: {", ".join(ai_f.get('categories', [])) if ai_f.get('categories') else 'Alla'}</span>
+                {" ".join([f'<span style="background-color: #1e3a8a; color: #dbeafe; border: 1px solid #1d4ed8; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Nyckelord: {kw}</span>' for kw in ai_f.get('keywords', [])])}
+                {f'<span style="background-color: #701a75; color: #fdf4ff; border: 1px solid #a21caf; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Alkoholhalt: {ai_f.get("min_alc") or 0}% - {ai_f.get("max_alc") or 100}%</span>' if (ai_f.get("min_alc") or ai_f.get("max_alc")) else ''}
+                {f'<span style="background-color: #7c2d12; color: #ffedd5; border: 1px solid #c2410c; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Maxpris: {ai_f.get("max_price")} kr</span>' if ai_f.get("max_price") else ''}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("Rensa AI-sökning ❌", key="clear_ai"):
+            reset_ai_search()
+            st.rerun()
+
+st.markdown("---")
 
 # ─── Top 3 KPI cards ─────────────────────────────────────────────────────────
 st.markdown("### Mest prisvärda produkter")
