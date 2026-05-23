@@ -193,17 +193,17 @@ Du MÅSTE svara med ett giltigt JSON-objekt med exakt denna struktur:
   "explanation": "En kort, inspirerande förklaring på svenska om varför rekommendationerna passar tillfället (max 2 meningar).",
   "categories": ["kategori1", "kategori2"],
   "keywords": ["sökord1", "sökord2"],
-  "min_alc": 4.5,
-  "max_alc": 15.0,
-  "max_price": 250.0,
+  "min_alc": null,
+  "max_alc": null,
+  "max_price": null,
   "min_apk": null
 }
 
-Regler för fälten:
+Viktiga regler för fälten:
 - 'categories' MÅSTE vara en lista av noll eller flera av dessa exakta svenska kategorinamn: "Öl", "Vin", "Sprit", "Cider & blanddrycker", "Alkoholfritt", "Presenter". Om alla kategorier passar, returnera en tom lista [].
 - 'keywords' MÅSTE vara en lista med 2 till 5 korta, relevanta sökord på svenska i singular och gemener (t.ex. "ipa", "lager", "fruktigt", "kryddigt", "snaps", "champagne", "bordeaux", "friskt", "sommar") för att söka i produktnamn, underkategori eller producent.
-- 'min_alc' och 'max_alc' begränsar alkoholhalten i % (t.ex. 4.5 till 12.5). Sätt till null om ingen gräns finns.
-- 'max_price' begränsar priset per flaska/burk i SEK. Sätt till null om ingen gräns finns.
+- 'max_price' begränsar maxpriset i SEK per flaska/burk. Du MÅSTE sätta 'max_price' till null såvida inte användaren explicit efterfrågar billiga alternativ, en stram budget eller anger ett specifikt maxpris. Sätt det ALDRIG till ett godtyckligt värde om det inte efterfrågas!
+- 'min_alc' och 'max_alc' begränsar alkoholhalten i % (t.ex. 4.5 till 12.5). Du MÅSTE sätta dessa till null såvida inte användaren efterfrågar en specifik styrka (t.ex. alkoholfritt, svagare eller stark dryck). Sätt dem aldrig till godtyckliga värden om det inte efterfrågas!
 - 'min_apk' begränsar minsta APK om användaren explicit ber om budget, mest alkohol för pengarna osv. Annars null.
 """
 
@@ -458,6 +458,9 @@ def run_ai_search():
             if closest_max <= price_options[0]:
                 closest_max = price_options[1]
             st.session_state.sb_price = (price_options[0], closest_max)
+        else:
+            # If no max price is requested, set the slider upper limit to the absolute maximum price option
+            st.session_state.sb_price = (price_options[0], price_options[-1])
 
 # ─── Header ──────────────────────────────────────────────────────────────────
 st.title("Systembolaget APK-Analysator")
