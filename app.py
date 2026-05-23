@@ -170,7 +170,7 @@ def get_systembolaget_url(row: pd.Series) -> str:
 
 def query_groq_occasion(user_prompt: str) -> dict:
     """
-    Queries the Groq API using Llama 3 (llama3-8b-8192) to get structured recommendations
+    Queries the Groq API using Llama 3.1 (llama-3.1-8b-instant) to get structured recommendations
     for the user's occasion.
     """
     api_key = st.secrets.get("GROQ_API_KEY", "") or os.environ.get("GROQ_API_KEY", "")
@@ -208,7 +208,7 @@ Regler för fälten:
 """
 
     payload = {
-        "model": "llama3-8b-8192",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Tillfälle: {user_prompt}"}
