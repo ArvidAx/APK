@@ -413,6 +413,52 @@ def reset_ai_search():
     st.session_state.sb_alc = (min_alc_val, max_alc_val)
     st.session_state.sb_price = (price_options[0], default_high)
 
+
+# Callback function for AI Occasion Finder
+def run_ai_search():
+    user_input = st.session_state.ai_input_val.strip() if "ai_input_val" in st.session_state else ""
+    if not user_input:
+        return
+        
+    ai_result = query_groq_occasion(user_input)
+    
+    if "error" in ai_result:
+        st.session_state.ai_error = ai_result["error"]
+        st.session_state.ai_filters = None
+        st.session_state.ai_occasion = None
+    else:
+        st.session_state.ai_filters = ai_result
+        st.session_state.ai_occasion = user_input
+        st.session_state.ai_error = None
+        
+        # Apply filters programmatically to sidebar widgets
+        ai_cats = ai_result.get("categories", [])
+        valid_cats = [c for c in ai_cats if c in categories]
+        if valid_cats:
+            st.session_state.sb_categories = valid_cats
+        else:
+            st.session_state.sb_categories = categories
+            
+        min_a = ai_result.get("min_alc")
+        max_a = ai_result.get("max_alc")
+        min_val = float(min_alc_val)
+        max_val = float(max_alc_val)
+        min_a_f = max(min_val, float(min_a)) if min_a is not None else min_val
+        max_a_f = min(max_val, float(max_a)) if max_a is not None else max_val
+        if min_a_f >= max_a_f:
+            max_a_f = min(max_val, min_a_f + 0.5)
+            if min_a_f >= max_a_f:
+                min_a_f = max(min_val, max_a_f - 0.5)
+        st.session_state.sb_alc = (min_a_f, max_a_f)
+        
+        max_p = ai_result.get("max_price")
+        if max_p is not None:
+            max_p_float = float(max_p)
+            closest_max = min(price_options, key=lambda x: abs(x - max_p_float))
+            if closest_max <= price_options[0]:
+                closest_max = price_options[1]
+            st.session_state.sb_price = (price_options[0], closest_max)
+
 # ─── Header ──────────────────────────────────────────────────────────────────
 st.title("Systembolaget APK-Analysator")
 today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -550,44 +596,8 @@ with st.container():
             key="ai_input_val"
         )
     with col_btn:
-        search_clicked = st.button("Hitta med AI ⚡", use_container_width=True)
-
-    if search_clicked and ai_input.strip():
-        with st.spinner("AI-sommelieren analyserar tillfället..."):
-            ai_result = query_groq_occasion(ai_input.strip())
-            
-            if "error" in ai_result:
-                st.session_state.ai_error = ai_result["error"]
-                st.session_state.ai_filters = None
-                st.session_state.ai_occasion = None
-            else:
-                st.session_state.ai_filters = ai_result
-                st.session_state.ai_occasion = ai_input.strip()
-                st.session_state.ai_error = None
-                
-                # Apply filters programmatically to sidebar widgets
-                ai_cats = ai_result.get("categories", [])
-                valid_cats = [c for c in ai_cats if c in categories]
-                if valid_cats:
-                    st.session_state.sb_categories = valid_cats
-                else:
-                    st.session_state.sb_categories = categories
-                    
-                min_a = ai_result.get("min_alc")
-                max_a = ai_result.get("max_alc")
-                min_val = float(min_alc_val)
-                max_val = float(max_alc_val)
-                min_a_f = max(min_val, float(min_a)) if min_a is not None else min_val
-                max_a_f = min(max_val, float(max_a)) if max_a is not None else max_val
-                st.session_state.sb_alc = (min_a_f, max_a_f)
-                
-                max_p = ai_result.get("max_price")
-                if max_p is not None:
-                    max_p_float = float(max_p)
-                    closest_max = min(price_options, key=lambda x: abs(x - max_p_float))
-                    st.session_state.sb_price = (price_options[0], closest_max)
-                
-                st.rerun()
+        # Use on_click callback to execute before widget instantiation to avoid StreamlitAPIException
+        st.button("Hitta med AI ⚡", on_click=run_ai_search, use_container_width=True)
 
     # Display errors if any
     if st.session_state.ai_error:
@@ -613,9 +623,8 @@ with st.container():
         </div>
         """, unsafe_allow_html=True)
         
-        if st.button("Rensa AI-sökning ❌", key="clear_ai"):
-            reset_ai_search()
-            st.rerun()
+        # Use on_click callback to clear state cleanly
+        st.button("Rensa AI-sökning ❌", key="clear_ai", on_click=reset_ai_search)
 
 st.markdown("---")
 
