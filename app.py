@@ -431,19 +431,21 @@ def load_data() -> pd.DataFrame:
         except Exception as se:
             logger.warning(f"Failed to update local cache file on disk: {se}")
 
- # Main execution flow
+# Main execution flow
+df = None
 try:
     df = load_data()
 except Exception as exc:
-    st.error("### Systemfel: Assortment kunde inte hämtas")
-    st.markdown(f"""
-    Applikationen misslyckades med att hämta Systembolagets produktdata från API:t och kunde inte ladda en lokal backup.
-    
-    **Felmeddelande:**
-    `{str(exc)}`
-    
-    *Vänligen kontrollera din internetanslutning eller kontakta administratören.*
-    """)
+    logger.error(f"Fatal: load_data() failed: {exc}")
+    st.error("Systemfel: Assortimentdata kunde inte hämtas")
+    st.markdown(
+        f"Applikationen misslyckades med att hämta Systembolagets produktdata. "
+        f"Kontrollera din internetanslutning eller försök igen om en stund.\n\n"
+        f"**Felkod:** `{type(exc).__name__}`"
+    )
+    st.stop()
+
+if df is None:
     st.stop()
 
 # Header Component
