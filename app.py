@@ -436,6 +436,7 @@ include_pant = st.sidebar.toggle(
 selected_categories = st.sidebar.multiselect(
     "Välj kategorier",
     options=categories,
+    default=st.session_state.sb_categories,
     key="sb_categories"
 )
 
@@ -448,6 +449,7 @@ selected_alc = st.sidebar.slider(
     "Alkoholhalt (%)",
     min_value=min_alc_val,
     max_value=max_alc_val,
+    value=st.session_state.sb_alc,
     step=0.5,
     format="%.1f%%",
     key="sb_alc"
@@ -456,6 +458,7 @@ selected_alc = st.sidebar.slider(
 selected_price_low, selected_price_high = st.sidebar.select_slider(
     "Pris (SEK)",
     options=price_options,
+    value=st.session_state.sb_price,
     format_func=lambda val: f"{val} kr",
     key="sb_price"
 )
