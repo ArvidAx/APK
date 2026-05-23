@@ -395,6 +395,10 @@ default_high = min(500, price_options[-1]) if price_options[-1] > 500 else price
 if default_high not in price_options:
     default_high = min(price_options, key=lambda x: abs(x - default_high))
 
+# Volume bounds definition
+min_vol_val = int(df["volume"].min())
+max_vol_val = int(df["volume"].max())
+
 # Initialize session state variables for AI Occasion Finder
 if "ai_occasion" not in st.session_state:
     st.session_state.ai_occasion = None
@@ -410,6 +414,12 @@ if "sb_alc" not in st.session_state:
     st.session_state.sb_alc = (min_alc_val, max_alc_val)
 if "sb_price" not in st.session_state:
     st.session_state.sb_price = (price_options[0], default_high)
+if "sb_vol_slider" not in st.session_state:
+    st.session_state.sb_vol_slider = (min_vol_val, max_vol_val)
+if "sb_vol_min_input" not in st.session_state:
+    st.session_state.sb_vol_min_input = min_vol_val
+if "sb_vol_max_input" not in st.session_state:
+    st.session_state.sb_vol_max_input = max_vol_val
 
 # Helper function to reset AI filters and restore defaults
 def reset_ai_search():
@@ -419,6 +429,23 @@ def reset_ai_search():
     st.session_state.sb_categories = default_cats
     st.session_state.sb_alc = (min_alc_val, max_alc_val)
     st.session_state.sb_price = (price_options[0], default_high)
+    st.session_state.sb_vol_slider = (min_vol_val, max_vol_val)
+    st.session_state.sb_vol_min_input = min_vol_val
+    st.session_state.sb_vol_max_input = max_vol_val
+
+# Callback functions to synchronize volume slider and number inputs bidirectionally
+def sync_vol_from_slider():
+    st.session_state.sb_vol_min_input = st.session_state.sb_vol_slider[0]
+    st.session_state.sb_vol_max_input = st.session_state.sb_vol_slider[1]
+
+def sync_vol_from_inputs():
+    mn = st.session_state.sb_vol_min_input
+    mx = st.session_state.sb_vol_max_input
+    if mn > mx:
+        mn, mx = mx, mn
+        st.session_state.sb_vol_min_input = mn
+        st.session_state.sb_vol_max_input = mx
+    st.session_state.sb_vol_slider = (mn, mx)
 
 
 # Callback function for AI Occasion Finder
@@ -549,6 +576,41 @@ selected_price_low, selected_price_high = st.sidebar.select_slider(
     key="sb_price"
 )
 
+# Volume Range controls with bidirectional synchronization between Slider and Number Inputs
+st.sidebar.markdown("### Volym (ml)")
+selected_vol = st.sidebar.slider(
+    "Volymintervall (ml)",
+    min_value=min_vol_val,
+    max_value=max_vol_val,
+    value=st.session_state.sb_vol_slider,
+    step=10,
+    format="%d ml",
+    key="sb_vol_slider",
+    on_change=sync_vol_from_slider
+)
+
+col_vol1, col_vol2 = st.sidebar.columns(2)
+with col_vol1:
+    st.number_input(
+        "Min volym (ml)",
+        min_value=min_vol_val,
+        max_value=max_vol_val,
+        value=st.session_state.sb_vol_min_input,
+        step=50,
+        key="sb_vol_min_input",
+        on_change=sync_vol_from_inputs
+    )
+with col_vol2:
+    st.number_input(
+        "Max volym (ml)",
+        min_value=min_vol_val,
+        max_value=max_vol_val,
+        value=st.session_state.sb_vol_max_input,
+        step=50,
+        key="sb_vol_max_input",
+        on_change=sync_vol_from_inputs
+    )
+
 search_query = st.sidebar.text_input(
     "Sök produkt eller producent",
     placeholder="T.ex. Falcon, Absolut, Bordeaux...",
@@ -620,6 +682,11 @@ filtered_df = filtered_df[
 filtered_df = filtered_df[
     (filtered_df["price"] >= selected_price_low) &
     (filtered_df["price"] <= selected_price_high)
+]
+
+filtered_df = filtered_df[
+    (filtered_df["volume"] >= selected_vol[0]) &
+    (filtered_df["volume"] <= selected_vol[1])
 ]
 
 if search_query:
