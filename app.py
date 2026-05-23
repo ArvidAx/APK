@@ -1,12 +1,12 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 import httpx
 import json
 import os
+import re
 import logging
 import datetime
-import altair as alt
-from typing import Any, Dict, List, Union
+from typing import Dict, List
 
 # Set up logging to stdout
 logging.basicConfig(
@@ -22,15 +22,14 @@ FALLBACK_FILE = "local_products_fallback.json"
 # Configure Streamlit page layout and theme attributes
 st.set_page_config(
     page_title="Systembolaget APK-Analysator",
-    page_icon="ðŸº",
+    page_icon="🍺",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Premium clean SaaS CSS layout (non-slop, clean minimal style)
+# Premium clean CSS
 st.markdown("""
 <style>
-    /* Clean minimal modifications */
     .stApp {
         background-color: #0b0f19;
         color: #f1f5f9;
@@ -39,15 +38,6 @@ st.markdown("""
         font-family: 'Inter', sans-serif !important;
         font-weight: 600 !important;
     }
-    
-    /* Modern flat KPI Cards container */
-    .kpi-container {
-        display: flex;
-        gap: 1rem;
-        margin-bottom: 1.5rem;
-        margin-top: 0.75rem;
-    }
-    
     .kpi-card {
         flex: 1;
         background: #111827;
@@ -56,23 +46,12 @@ st.markdown("""
         border: 1px solid #1f2937;
         border-left: 4px solid #3b82f6;
         transition: border-color 0.2s ease;
+        margin-bottom: 0.5rem;
     }
-    
-    .kpi-card:hover {
-        border-color: #4b5563;
-    }
-    
-    /* Subtle borders for ranks */
-    .kpi-card.gold {
-        border-left-color: #d97706;
-    }
-    .kpi-card.silver {
-        border-left-color: #6b7280;
-    }
-    .kpi-card.bronze {
-        border-left-color: #b45309;
-    }
-    
+    .kpi-card:hover { border-color: #4b5563; }
+    .kpi-card.gold  { border-left-color: #d97706; }
+    .kpi-card.silver{ border-left-color: #6b7280; }
+    .kpi-card.bronze{ border-left-color: #b45309; }
     .kpi-title {
         font-size: 0.75rem;
         font-weight: 600;
@@ -81,7 +60,6 @@ st.markdown("""
         color: #9ca3af;
         margin-bottom: 0.25rem;
     }
-    
     .kpi-name {
         font-size: 1.1rem;
         font-weight: 600;
@@ -91,28 +69,25 @@ st.markdown("""
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    
     .kpi-value {
         font-size: 1.8rem;
         font-weight: 700;
         color: #10b981;
         line-height: 1;
     }
-    
     .kpi-value-unit {
         font-size: 0.85rem;
         font-weight: 500;
         color: #9ca3af;
     }
-    
     .kpi-meta {
         margin-top: 0.5rem;
         font-size: 0.8rem;
         color: #9ca3af;
         display: flex;
         gap: 0.5rem;
+        flex-wrap: wrap;
     }
-    
     .kpi-badge {
         background-color: #1f2937;
         padding: 0.1rem 0.4rem;
@@ -125,42 +100,33 @@ st.markdown("""
 
 
 def is_order_item(row: pd.Series) -> bool:
-    """
-    Checks if a product is a order assortment item ('BestÃ¤llningsvara') based on assortment properties.
-    """
+    """Checks if a product is a beställningsvara based on assortment properties."""
     assort = str(row.get("assortment") or "").strip().upper()
     assort_text = str(row.get("assortmentText") or "").strip().lower()
-    return (assort == "BS") or ("bestÃ¤llningssortiment" in assort_text)
+    return (assort == "BS") or ("beställningssortiment" in assort_text)
 
 
 def construct_name(row: pd.Series, name_col: str, add_name_col: str) -> str:
-    """
-    Constructs the clean display name by concatenating Name and AdditionalName if available.
-    """
+    """Constructs the clean display name from Name + AdditionalName."""
     n = row.get(name_col)
     an = row.get(add_name_col)
-    
     n_str = "" if pd.isna(n) or n is None else str(n).strip()
     an_str = "" if pd.isna(an) or an is None else str(an).strip()
-    
-    if an_str and an_str.lower() != "nan" and an_str != "":
+    if an_str and an_str.lower() != "nan":
         return f"{n_str} ({an_str})"
     return n_str
 
 
 def get_pant_sek(row: pd.Series) -> float:
     """
-    Calculates the Swedish deposit (pant) fee in SEK based on packaging type and recycleFee.
-    - Cans (Burk): 2.00 SEK (All metal cans have 2 kr pant)
-    - PET bottles (PET-flaska): 2.00 SEK (All PET bottles have 2 kr pant as requested)
-    - Standard returnable glass (Returglas): 0.60 SEK (<=33cl) or 0.90 SEK (>33cl)
+    Calculates the Swedish deposit (pant) in SEK.
+    - Burk (metal can): 2.00 SEK
+    - PET-flaska: 2.00 SEK
+    - Returglas: 0.60 SEK (<=33cl) or 0.90 SEK (>33cl)
     """
     packaging = str(row.get("bottleText") or "").strip().lower()
-    
-    # Prioritize metal can (burk) and PET bottle checks so they have exactly 2.00 SEK pant
     if "burk" in packaging or "pet" in packaging:
         return 2.00
-        
     fee = row.get("recycleFee")
     if pd.notna(fee) and fee is not None:
         try:
@@ -173,193 +139,157 @@ def get_pant_sek(row: pd.Series) -> float:
                 vol = float(row.get("volume") or 0)
                 return 0.60 if vol <= 330 else 0.90
             elif fee_val > 0:
-                if fee_val > 10.0:
-                    return fee_val / 100.0
-                return fee_val
+                return fee_val / 100.0 if fee_val > 10.0 else fee_val
         except ValueError:
             pass
-            
-    # Fallback based on packaging text
     if "returglas" in packaging:
         vol = float(row.get("volume") or 0)
         return 0.60 if vol <= 330 else 0.90
-        
     return 0.00
 
 
 def get_systembolaget_url(row: pd.Series) -> str:
-    """
-    Constructs the official Systembolaget product page URL dynamically.
-    Fails safe to Systembolaget search page if required fields are missing.
-    """
+    """Constructs the official Systembolaget product page URL."""
     prod_num = str(row.get("productNumber") or "").strip()
     if not prod_num:
         return "https://www.systembolaget.se/"
-        
     cat = str(row.get("categoryLevel1") or "").strip().lower()
     cat_map = {
-        "Ã¶l": "ol",
-        "sprit": "sprit",
-        "vin": "vin",
+        "öl": "ol", "sprit": "sprit", "vin": "vin",
         "cider & blanddrycker": "cider-och-blanddrycker",
-        "alkoholfritt": "alkoholfritt",
-        "presenter": "presenter"
+        "alkoholfritt": "alkoholfritt", "presenter": "presenter"
     }
     cat_slug = cat_map.get(cat, cat)
-    
-    # Replace Swedish characters in category
-    cat_slug = cat_slug.replace("Ã¶", "o").replace("Ã¤", "a").replace("Ã¥", "a").replace("&", "och").replace(" ", "-")
-    
-    # Clean product name for slug
+    cat_slug = cat_slug.replace("ö", "o").replace("ä", "a").replace("å", "a").replace("&", "och").replace(" ", "-")
     name = str(row.get("Name") or "").strip().lower()
-    name_slug = name.replace("Ã¶", "o").replace("Ã¤", "a").replace("Ã¥", "a")
-    
-    # Keep only alphanumeric characters and replace spaces/punctuation with hyphens
-    import re
+    name_slug = name.replace("ö", "o").replace("ä", "a").replace("å", "a")
     name_slug = re.sub(r'[^a-z0-9\-]', '-', name_slug)
     name_slug = re.sub(r'-+', '-', name_slug).strip('-')
-    
     return f"https://www.systembolaget.se/produkt/{cat_slug}/{name_slug}-{prod_num}/"
 
 
 @st.cache_data(ttl=86400)
 def load_data() -> pd.DataFrame:
     """
-    Loads Systembolaget assortment data. 
-    First checks if 'local_products_fallback.json' exists and is fresher than 24 hours (86400s).
-    If so, loads instantly from local disk. Otherwise, fetches fresh data from API mirror
-    and updates the local file on disk.
+    Loads Systembolaget assortment data.
+    First checks if local_products_fallback.json is fresh (<24h).
+    If so, loads from disk instantly. Otherwise fetches from API and saves locally.
     """
     data = None
     loaded_from_cache = False
     fetched_from_api = False
 
-    # Check if local cache file is fresh (modified within the last 24 hours)
+    # Try fresh local cache first
     if os.path.exists(FALLBACK_FILE):
         try:
             mtime = os.path.getmtime(FALLBACK_FILE)
-            now = datetime.datetime.now().timestamp()
-            if now - mtime < 86400:
-                logger.info("Local fallback cache is fresh (<24h old). Loading directly from disk...")
+            if datetime.datetime.now().timestamp() - mtime < 86400:
+                logger.info("Local cache is fresh. Loading from disk...")
                 with open(FALLBACK_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 loaded_from_cache = True
-                logger.info("Successfully loaded assortment from fresh local disk cache.")
+                logger.info("Loaded from local disk cache.")
         except Exception as fe:
-            logger.error(f"Failed to read local cache file: {fe}")
+            logger.error(f"Failed to read local cache: {fe}")
 
-    # If no fresh local cache, fetch from remote API mirror
+    # Fetch from API if no fresh local cache
     if not loaded_from_cache:
         try:
-            logger.info(f"Attempting to fetch fresh assortment from API mirror: {API_URL}")
+            logger.info(f"Fetching from API: {API_URL}")
             with httpx.Client(timeout=30.0) as client:
                 response = client.get(API_URL)
                 response.raise_for_status()
                 data = response.json()
                 fetched_from_api = True
-                logger.info("Assortment successfully fetched from API mirror.")
+                logger.info("Fetched from API successfully.")
         except Exception as e:
-            logger.error(f"Failed to fetch data from API mirror: {e}")
-            # If API fails, try to load any available local fallback even if older than 24 hours!
+            logger.error(f"API fetch failed: {e}")
             if os.path.exists(FALLBACK_FILE):
-                logger.info("API unreachable. Loading available local cache file (even if older than 24 hours)...")
+                logger.info("API unreachable — using older local cache.")
                 try:
                     with open(FALLBACK_FILE, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    logger.info("Successfully loaded assortment from local fallback.")
                 except Exception as fe:
-                    logger.error(f"Failed to read local fallback: {fe}")
-                    raise RuntimeError(f"API fetch failed, and local backup file is corrupted: {fe}")
+                    raise RuntimeError(f"API failed and local cache is corrupted: {fe}")
             else:
-                raise RuntimeError(
-                    f"API fetch failed and no local fallback file '{FALLBACK_FILE}' exists to recover."
-                )
+                raise RuntimeError(f"API failed and no local fallback exists.")
 
     if not data:
-        raise ValueError("Decoded assortment payload is empty.")
+        raise ValueError("Assortment payload is empty.")
 
-    # 2. Data Processing & Cleaning
     df = pd.DataFrame(data)
     if df.empty:
-        raise ValueError("Consolidated assortment contains no active entries.")
+        raise ValueError("Assortment DataFrame is empty.")
 
-    # Ensure vital assortment fields are present
-    vital_cols = [
-        "price", "volume", "alcoholPercentage", "categoryLevel1", 
-        "categoryLevel2", "assortment", "assortmentText", "producerName"
-    ]
-    for col in vital_cols:
+    # Ensure vital columns exist
+    for col in ["price", "volume", "alcoholPercentage", "categoryLevel1",
+                "categoryLevel2", "assortment", "assortmentText", "producerName"]:
         if col not in df.columns:
             df[col] = None
 
-    # Strict numeric conversions
+    # Numeric conversions
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
     df["alcoholPercentage"] = pd.to_numeric(df["alcoholPercentage"], errors="coerce")
 
-    # Drop rows based on strict validation pipeline:
-    # Price, volume, and alcohol content must be valid (> 0)
+    # Drop invalid rows
     initial_rows = len(df)
     df = df.dropna(subset=["price", "volume", "alcoholPercentage"])
     df = df[(df["price"] > 0) & (df["volume"] > 0) & (df["alcoholPercentage"] > 0)]
-    cleaned_rows = len(df)
-    logger.info(f"Ingestion Pipeline: Cleaned dataset rows from {initial_rows} to {cleaned_rows}.")
+    logger.info(f"Cleaned: {initial_rows} → {len(df)} rows.")
 
-    # Robust Name parsing supporting productNameBold & productNameThin
+    # Build display name
     name_col = "productNameBold" if "productNameBold" in df.columns else "name"
     add_name_col = "productNameThin" if "productNameThin" in df.columns else "additionalName"
-    
     df["Name"] = df.apply(lambda r: construct_name(r, name_col, add_name_col), axis=1)
 
-    # Categories assignment
-    df["Main Category"] = df["categoryLevel1"].fillna("Ã–vrigt").astype(str).str.strip()
-    df["Subcategory"] = df["categoryLevel2"].fillna("Ã–vrigt").astype(str).str.strip()
+    # Categories
+    df["Main Category"] = df["categoryLevel1"].fillna("Övrigt").astype(str).str.strip()
+    df["Subcategory"] = df["categoryLevel2"].fillna("Övrigt").astype(str).str.strip()
 
-    # Order Assortment flags
+    # Assortment flags
     df["IsOrderAssortment"] = df.apply(is_order_item, axis=1)
     df["Order Assortment"] = df["IsOrderAssortment"].map({True: "Ja", False: "Nej"})
-    df["Producer"] = df["producerName"].fillna("OkÃ¤nd").astype(str).str.strip()
+    df["Producer"] = df["producerName"].fillna("Okänd").astype(str).str.strip()
 
-    # Calculate Pant & URL
+    # Pant & URL
     df["Pant"] = df.apply(get_pant_sek, axis=1)
     df["SystembolagetURL"] = df.apply(get_systembolaget_url, axis=1)
 
-    # 3. APK Algorithmic Calculation
-    # Formula: APK = (Volume * (AlcoholPercentage / 100)) / Price
+    # APK calculation
     df["APK"] = (df["volume"] * (df["alcoholPercentage"] / 100.0)) / df["price"]
     df["APK"] = df["APK"].round(4)
 
-    # Base sort descending by APK
+    # Sort & deduplicate
     df = df.sort_values(by="APK", ascending=False).reset_index(drop=True)
-    
-    # Deduplicate: Keep only the first entry (highest APK) for any given Name, Volume, and Alcohol Percentage
     initial_dedup = len(df)
     df = df.drop_duplicates(subset=["Name", "volume", "alcoholPercentage"], keep="first").reset_index(drop=True)
-    deduped_rows = len(df)
-    logger.info(f"Deduplication Pipeline: Reduced rows from {initial_dedup} to {deduped_rows} by grouping Name, volume, and alcoholPercentage.")
-    
-    # Establish overall absolute rank
+    logger.info(f"Dedup: {initial_dedup} → {len(df)} rows.")
+
     df["Rank"] = df.index + 1
 
-    # Save to local fallback cache dynamically if fetched successfully from API
+    # Persist to local cache if freshly fetched
     if fetched_from_api:
         try:
             with open(FALLBACK_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info("Successfully updated local fallback cache file on disk for offline resilience.")
+            logger.info("Updated local fallback cache.")
         except Exception as se:
-            logger.warning(f"Failed to update local cache file on disk: {se}")
+            logger.warning(f"Failed to write local cache: {se}")
 
-# Main execution flow
+    return df
+
+
+# ─── Main execution ──────────────────────────────────────────────────────────
 df = None
 try:
     df = load_data()
 except Exception as exc:
     logger.error(f"Fatal: load_data() failed: {exc}")
-    st.error("Systemfel: Assortimentdata kunde inte hÃ¤mtas")
+    st.error("Systemfel: Produktdata kunde inte hämtas")
     st.markdown(
-        f"Applikationen misslyckades med att hÃ¤mta Systembolagets produktdata. "
-        f"Kontrollera din internetanslutning eller fÃ¶rsÃ¶k igen om en stund.\n\n"
+        f"Applikationen misslyckades med att hämta Systembolagets data. "
+        f"Kontrollera din internetanslutning eller försök igen.\n\n"
         f"**Felkod:** `{type(exc).__name__}`"
     )
     st.stop()
@@ -367,48 +297,39 @@ except Exception as exc:
 if df is None:
     st.stop()
 
-# Header Component
+# ─── Header ──────────────────────────────────────────────────────────────────
 st.title("Systembolaget APK-Analysator")
 today_str = datetime.date.today().strftime("%Y-%m-%d")
 st.markdown(
-    f"SÃ¶k, filtrera och analysera prisvÃ¤rdheten pÃ¥ Systembolagets sortiment baserat pÃ¥ **APK (Alkohol Per Krona)**. "
-    f"Data uppdateras dagligen. Senaste kÃ¶rning: {today_str}"
+    f"Sök, filtrera och analysera prisvärdheten på Systembolagets sortiment baserat på "
+    f"**APK (Alkohol Per Krona)**. Data uppdateras dagligen. Senaste körning: {today_str}"
 )
 
-# Status info bar
+# ─── Sidebar ─────────────────────────────────────────────────────────────────
 st.sidebar.markdown("### Systemstatus")
-st.sidebar.info(
-    f"Totalt sortiment: {len(df):,} produkter laddade och validerade."
-)
+st.sidebar.info(f"Totalt sortiment: {len(df):,} produkter laddade.")
 
-# Sidebar Control Panel
 st.sidebar.markdown("### Filter")
 
-# Pant toggle switch
 include_pant = st.sidebar.toggle(
     "Inkludera pant i priset",
     value=False,
-    help="I Sverige betalas pant utÃ¶ver hyllpriset pÃ¥ burkar, PET-flaskor och returglas. Aktivera fÃ¶r att berÃ¤kna APK baserat pÃ¥ det fulla priset (bruttopris) du betalar vid kassan."
+    help="Burkar, PET-flaskor och returglas har pant i Sverige. Aktivera för att räkna APK på totalpriset."
 )
 
-# 1. Category Filter (default pre-select Ã–l and Sprit)
-categories = sorted(list(df["Main Category"].unique()))
-default_cats = [c for c in ["Ã–l", "Sprit"] if c in categories]
+categories = sorted(df["Main Category"].unique().tolist())
+default_cats = [c for c in ["Öl", "Sprit"] if c in categories]
 selected_categories = st.sidebar.multiselect(
-    "VÃ¤lj Huvudkategorier",
+    "Välj kategorier",
     options=categories,
     default=default_cats,
-    help="VÃ¤lj en eller flera kategorier att analysera."
 )
 
-# 2. Order Assortment Filter (Visa bestÃ¤llningsvaror)
 show_order_items = st.sidebar.checkbox(
-    "Visa bestÃ¤llningsvaror (BS)",
+    "Visa beställningsvaror (BS)",
     value=False,
-    help="Markera fÃ¶r att inkludera bestÃ¤llningssortimentet. Avmarkerad visar endast direkt tillgÃ¤ngliga hyllvaror."
 )
 
-# 3. Dynamic Range Sliders setup
 min_alc_val = float(df["alcoholPercentage"].min())
 max_alc_val = float(df["alcoholPercentage"].max())
 selected_alc = st.sidebar.slider(
@@ -420,79 +341,61 @@ selected_alc = st.sidebar.slider(
     format="%.1f%%"
 )
 
-# Generate options for the select_slider
-min_price_val = float(df["price"].min())
-max_price_val = float(df["price"].max())
-
-# Linear increments of 5 kr under 1000 SEK
-options_under_1000 = list(range(int(min_price_val), min(1000, int(max_price_val)) + 1, 5))
-if int(min_price_val) not in options_under_1000:
-    options_under_1000.insert(0, int(min_price_val))
-
-if max_price_val > 1000.0:
-    # Increments of 50 kr from 1000 to 5000 SEK, and 250 kr above 5000 SEK
-    options_above_1000 = list(range(1000, min(5000, int(max_price_val)) + 1, 50))
-    if max_price_val > 5000.0:
-        options_above_1000 += list(range(5000, int(max_price_val) + 1, 250))
-    if int(max_price_val) not in options_above_1000:
-        options_above_1000.append(int(max_price_val))
-    options = sorted(list(set(options_under_1000 + options_above_1000)))
+# Exponential price slider
+min_price_val = int(df["price"].min())
+max_price_val = int(df["price"].max())
+options_under_1000 = list(range(min_price_val, min(1000, max_price_val) + 1, 5))
+if min_price_val not in options_under_1000:
+    options_under_1000.insert(0, min_price_val)
+if max_price_val > 1000:
+    options_above_1000 = list(range(1000, min(5000, max_price_val) + 1, 50))
+    if max_price_val > 5000:
+        options_above_1000 += list(range(5000, max_price_val + 1, 250))
+    if max_price_val not in options_above_1000:
+        options_above_1000.append(max_price_val)
+    price_options = sorted(set(options_under_1000 + options_above_1000))
 else:
-    options = sorted(list(set(options_under_1000)))
+    price_options = sorted(set(options_under_1000))
 
-# Set up the non-linear select_slider with exact price handles
-default_high_val = min(500, options[-1]) if options[-1] > 500 else options[-1]
-if default_high_val not in options:
-    default_high_val = min(options, key=lambda x: abs(x - default_high_val))
+default_high = min(500, price_options[-1]) if price_options[-1] > 500 else price_options[-1]
+if default_high not in price_options:
+    default_high = min(price_options, key=lambda x: abs(x - default_high))
 
 selected_price_low, selected_price_high = st.sidebar.select_slider(
     "Pris (SEK)",
-    options=options,
-    value=(options[0], default_high_val),
+    options=price_options,
+    value=(price_options[0], default_high),
     format_func=lambda val: f"{val} kr"
 )
 
-# 4. Text Search input
 search_query = st.sidebar.text_input(
-    "SÃ¶k produkt eller producent",
+    "Sök produkt eller producent",
     placeholder="T.ex. Falcon, Absolut, Bordeaux...",
-    help="SÃ¶kningen matchar produktnamn, ytterligare beskrivning samt producentnamn skiftlÃ¤gesoberoende."
 )
 
-# Apply filters
+# ─── Apply filters ────────────────────────────────────────────────────────────
 filtered_df = df.copy()
 
-# Dynamic Price & APK adjustment based on pant toggle
-if include_pant:
-    filtered_df["Display Price"] = filtered_df["price"] + filtered_df["Pant"]
-else:
-    filtered_df["Display Price"] = filtered_df["price"]
-
-# Recalculate APK dynamically on display price
+filtered_df["Display Price"] = filtered_df["price"] + filtered_df["Pant"] if include_pant else filtered_df["price"]
 filtered_df["APK"] = (filtered_df["volume"] * (filtered_df["alcoholPercentage"] / 100.0)) / filtered_df["Display Price"]
 filtered_df["APK"] = filtered_df["APK"].round(4)
 
-# Filter 1: Main Category
 if selected_categories:
     filtered_df = filtered_df[filtered_df["Main Category"].isin(selected_categories)]
 
-# Filter 2: Order Assortment
 if not show_order_items:
-    filtered_df = filtered_df[filtered_df["IsOrderAssortment"] == False]
+    filtered_df = filtered_df[~filtered_df["IsOrderAssortment"]]
 
-# Filter 3: Alcohol Range
 filtered_df = filtered_df[
-    (filtered_df["alcoholPercentage"] >= selected_alc[0]) & 
+    (filtered_df["alcoholPercentage"] >= selected_alc[0]) &
     (filtered_df["alcoholPercentage"] <= selected_alc[1])
 ]
 
-# Filter 4: Price Range (using mapped exponential values)
 filtered_df = filtered_df[
-    (filtered_df["price"] >= selected_price_low) & 
+    (filtered_df["price"] >= selected_price_low) &
     (filtered_df["price"] <= selected_price_high)
 ]
 
-# Filter 5: Search Query
 if search_query:
     q = search_query.strip().lower()
     filtered_df = filtered_df[
@@ -500,26 +403,21 @@ if search_query:
         filtered_df["Producer"].str.lower().str.contains(q, na=False)
     ]
 
-# Sort explicitly by the newly calculated APK
 filtered_df = filtered_df.sort_values(by="APK", ascending=False).reset_index(drop=True)
 filtered_df["Rank"] = filtered_df.index + 1
 
-# Render KPI Top 3 cards based on active filtered dataset (Clean minimal layout)
-st.markdown("### Mest prisvÃ¤rda produkter")
+# ─── Top 3 KPI cards ─────────────────────────────────────────────────────────
+st.markdown("### Mest prisvärda produkter")
 if not filtered_df.empty:
     top_3 = filtered_df.head(3)
-    
-    # HTML KPI Columns container
     kpi_cols = st.columns(3)
     medals = ["Rank 1", "Rank 2", "Rank 3"]
     classes = ["gold", "silver", "bronze"]
-    
+
     for idx in range(3):
         with kpi_cols[idx]:
             if idx < len(top_3):
                 row = top_3.iloc[idx]
-                
-                # Format price label showing pant context
                 p_pant = row["Pant"]
                 p_display = row["Display Price"]
                 if p_pant > 0 and include_pant:
@@ -528,10 +426,10 @@ if not filtered_df.empty:
                     price_label = f"{p_display:.2f} kr (+{p_pant:.2f} kr pant)"
                 else:
                     price_label = f"{p_display:.2f} kr"
-                
+
                 st.markdown(f"""
                 <div class="kpi-card {classes[idx]}">
-                    <div class="kpi-title">{medals[idx]} â€¢ {row['Main Category']}</div>
+                    <div class="kpi-title">{medals[idx]} &bull; {row['Main Category']}</div>
                     <div class="kpi-name" title="{row['Name']}">{row['Name']}</div>
                     <div class="kpi-value">{row['APK']:.4f} <span class="kpi-value-unit">ml/SEK</span></div>
                     <div class="kpi-meta">
@@ -543,52 +441,48 @@ if not filtered_df.empty:
                 """, unsafe_allow_html=True)
             else:
                 st.markdown(f"""
-                <div class="kpi-card" style="border-left-color: rgba(255, 255, 255, 0.05); opacity: 0.4;">
+                <div class="kpi-card" style="opacity:0.3;">
                     <div class="kpi-title">{medals[idx]}</div>
                     <div class="kpi-name">-</div>
                     <div class="kpi-value">N/A</div>
-                    <div class="kpi-meta">-</div>
                 </div>
                 """, unsafe_allow_html=True)
 else:
-    st.info("Hittade inga produkter med nuvarande filterinstÃ¤llningar.")
+    st.info("Hittade inga produkter med nuvarande filterinställningar.")
 
-# Main Interactive Dataframe View
+# ─── Product table ────────────────────────────────────────────────────────────
 st.markdown("### Sortiment")
 if not filtered_df.empty:
-    # Prepare clean presentation schema
     display_df = pd.DataFrame({
         "Rank": filtered_df["Rank"],
-        "Name": filtered_df["Name"],
-        "Main Category": filtered_df["Main Category"],
-        "Subcategory": filtered_df["Subcategory"],
-        "Price (SEK)": filtered_df["Display Price"],
+        "Namn": filtered_df["Name"],
+        "Kategori": filtered_df["Main Category"],
+        "Underkategori": filtered_df["Subcategory"],
+        "Pris (SEK)": filtered_df["Display Price"],
         "Pant (SEK)": filtered_df["Pant"],
-        "Volume (ml)": filtered_df["volume"],
-        "Alcohol %": filtered_df["alcoholPercentage"],
+        "Volym (ml)": filtered_df["volume"],
+        "Alkohol %": filtered_df["alcoholPercentage"],
         "APK (ml/SEK)": filtered_df["APK"],
-        "Order Assortment (Yes/No)": filtered_df["Order Assortment"],
-        "Systembolaget": filtered_df["SystembolagetURL"]
+        "Beställningsvara": filtered_df["Order Assortment"],
+        "Systembolaget": filtered_df["SystembolagetURL"],
     })
 
-    # Render optimized st.dataframe
     st.dataframe(
         display_df,
         use_container_width=True,
         hide_index=True,
         column_config={
             "Rank": st.column_config.NumberColumn("Rank", format="#%d"),
-            "Price (SEK)": st.column_config.NumberColumn(
-                "Pris inkl. pant (SEK)" if include_pant else "Pris exkl. pant (SEK)", 
+            "Pris (SEK)": st.column_config.NumberColumn(
+                "Pris inkl. pant" if include_pant else "Pris",
                 format="%.2f kr"
             ),
             "Pant (SEK)": st.column_config.NumberColumn("Pant", format="%.2f kr"),
-            "Volume (ml)": st.column_config.NumberColumn("Volym (ml)", format="%d ml"),
-            "Alcohol %": st.column_config.NumberColumn("Alkoholhalt (%)", format="%.1f%%"),
-            "APK (ml/SEK)": st.column_config.NumberColumn("APK (ml/SEK)", format="%.4f"),
-            "Systembolaget": st.column_config.LinkColumn("Systembolaget â†—", display_text="Visa produkt â†—")
+            "Volym (ml)": st.column_config.NumberColumn("Volym", format="%d ml"),
+            "Alkohol %": st.column_config.NumberColumn("Alkohol", format="%.1f%%"),
+            "APK (ml/SEK)": st.column_config.NumberColumn("APK", format="%.4f"),
+            "Systembolaget": st.column_config.LinkColumn("Systembolaget ↗", display_text="Visa produkt ↗"),
         }
     )
 else:
-    st.warning("Justera dina filter i kontrollpanelen fÃ¶r att visa resultat.")
-
+    st.warning("Justera dina filter för att visa resultat.")
