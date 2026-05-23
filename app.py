@@ -121,11 +121,11 @@ def get_pant_sek(row: pd.Series) -> float:
     """
     Calculates the Swedish deposit (pant) in SEK.
     - Burk (metal can): 2.00 SEK
-    - PET-flaska: 2.00 SEK
+    - PET-flaska / Plastflaska: 2.00 SEK
     - Returglas: 0.60 SEK (<=33cl) or 0.90 SEK (>33cl)
     """
     packaging = str(row.get("bottleText") or "").strip().lower()
-    if "burk" in packaging or "pet" in packaging:
+    if "burk" in packaging or "pet" in packaging or "plast" in packaging:
         return 2.00
     fee = row.get("recycleFee")
     if pd.notna(fee) and fee is not None:
@@ -665,17 +665,50 @@ with st.container():
     # Display active AI search details and explanation
     if st.session_state.ai_filters:
         ai_f = st.session_state.ai_filters
+        
+        # Build badges HTML dynamically to prevent literal HTML rendering bugs in Markdown parser
+        badges = []
+        
+        # Categories badge
+        cats = ai_f.get('categories', [])
+        cats_str = ", ".join(cats) if cats else 'Alla'
+        badges.append(f'<span style="background-color: #064e3b; color: #a7f3d0; border: 1px solid #047857; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Kategorier: {cats_str}</span>')
+        
+        # Subcategories badge
+        subcats = ai_f.get('subcategories', [])
+        if subcats:
+            subcats_str = ", ".join(subcats)
+            badges.append(f'<span style="background-color: #0d9488; color: #ccfbf1; border: 1px solid #0f766e; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Underkategorier: {subcats_str}</span>')
+            
+        # Keywords badges
+        keywords = ai_f.get('keywords', [])
+        for kw in keywords:
+            kw_clean = str(kw).strip()
+            if kw_clean:
+                badges.append(f'<span style="background-color: #1e3a8a; color: #dbeafe; border: 1px solid #1d4ed8; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Nyckelord: {kw_clean}</span>')
+                
+        # Alcohol range badge
+        min_a = ai_f.get("min_alc")
+        max_a = ai_f.get("max_alc")
+        if min_a is not None or max_a is not None:
+            min_a_val = min_a if min_a is not None else 0
+            max_a_val = max_a if max_a is not None else 100
+            badges.append(f'<span style="background-color: #701a75; color: #fdf4ff; border: 1px solid #a21caf; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Alkoholhalt: {min_a_val}% - {max_a_val}%</span>')
+            
+        # Max price badge
+        max_p = ai_f.get("max_price")
+        if max_p is not None:
+            badges.append(f'<span style="background-color: #7c2d12; color: #ffedd5; border: 1px solid #c2410c; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Maxpris: {max_p} kr</span>')
+            
+        badges_html = "\n                ".join(badges)
+        
         st.markdown(f"""
         <div style="background-color: #111827; border: 1px solid #1f2937; border-left: 4px solid #10b981; border-radius: 8px; padding: 1rem; margin-top: 1rem; margin-bottom: 1rem;">
             <div style="font-size: 0.8rem; font-weight: 600; color: #10b981; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;">🤖 AI-Sommelier Rekommendation</div>
             <div style="font-size: 1.1rem; font-weight: 600; color: #ffffff; margin-bottom: 0.5rem;">Tillfälle: "{st.session_state.ai_occasion}"</div>
             <div style="font-size: 0.95rem; color: #e2e8f0; line-height: 1.5; margin-bottom: 0.75rem;">{ai_f.get('explanation', '')}</div>
             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                <span style="background-color: #064e3b; color: #a7f3d0; border: 1px solid #047857; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Kategorier: {", ".join(ai_f.get('categories', [])) if ai_f.get('categories') else 'Alla'}</span>
-                {f'<span style="background-color: #0d9488; color: #ccfbf1; border: 1px solid #0f766e; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Underkategorier: {", ".join(ai_f.get("subcategories", []))}</span>' if ai_f.get("subcategories") else ''}
-                {" ".join([f'<span style="background-color: #1e3a8a; color: #dbeafe; border: 1px solid #1d4ed8; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Nyckelord: {kw}</span>' for kw in ai_f.get('keywords', [])])}
-                {f'<span style="background-color: #701a75; color: #fdf4ff; border: 1px solid #a21caf; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Alkoholhalt: {ai_f.get("min_alc") or 0}% - {ai_f.get("max_alc") or 100}%</span>' if (ai_f.get("min_alc") or ai_f.get("max_alc")) else ''}
-                {f'<span style="background-color: #7c2d12; color: #ffedd5; border: 1px solid #c2410c; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;">Maxpris: {ai_f.get("max_price")} kr</span>' if ai_f.get("max_price") else ''}
+                {badges_html}
             </div>
         </div>
         """, unsafe_allow_html=True)
