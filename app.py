@@ -188,6 +188,11 @@ def query_groq_occasion(user_prompt: str) -> dict:
     
     system_prompt = """Du är en expert-sommelier för Systembolagets sortiment. Din uppgift är att analysera användarens tillfälle och ge förslag på passande drycker.
 
+ABSOLUTA REGLER:
+1. Du MÅSTE sätta 'max_price' till null såvida inte användaren explicit nämner pengar, budget eller ett pris i sin inmatning. Hitta ALDRIG på ett maxpris själv!
+2. Du MÅSTE sätta 'min_alc' och 'max_alc' till null såvida inte användaren efterfrågar t.ex. 'alkoholfritt' eller en specifik styrka. Hitta ALDRIG på en alkoholhalt själv!
+3. Om tillfället rör snaps, nubbe, sprit eller liknande, är kategorin alltid 'Sprit' och alkoholhalten ska vara null!
+
 Du MÅSTE svara med ett giltigt JSON-objekt med exakt denna struktur:
 {
   "explanation": "En kort, inspirerande förklaring på svenska om varför rekommendationerna passar tillfället (max 2 meningar).",
@@ -202,9 +207,9 @@ Du MÅSTE svara med ett giltigt JSON-objekt med exakt denna struktur:
 Viktiga regler för fälten:
 - 'categories' MÅSTE vara en lista av noll eller flera av dessa exakta svenska kategorinamn: "Öl", "Vin", "Sprit", "Cider & blanddrycker", "Alkoholfritt", "Presenter". Om alla kategorier passar, returnera en tom lista [].
 - 'keywords' MÅSTE vara en lista med 2 till 5 korta, relevanta sökord på svenska i singular och gemener (t.ex. "ipa", "lager", "fruktigt", "kryddigt", "snaps", "champagne", "bordeaux", "friskt", "sommar") för att söka i produktnamn, underkategori eller producent.
-- 'max_price' begränsar maxpriset i SEK per flaska/burk. Du MÅSTE sätta 'max_price' till null såvida inte användaren explicit efterfrågar billiga alternativ, en stram budget eller anger ett specifikt maxpris. Sätt det ALDRIG till ett godtyckligt värde om det inte efterfrågas!
-- 'min_alc' och 'max_alc' begränsar alkoholhalten i % (t.ex. 4.5 till 12.5). Du MÅSTE sätta dessa till null såvida inte användaren efterfrågar en specifik styrka (t.ex. alkoholfritt, svagare eller stark dryck). Sätt dem aldrig till godtyckliga värden om det inte efterfrågas!
-- 'min_apk' begränsar minsta APK om användaren explicit ber om budget, mest alkohol för pengarna osv. Annars null.
+- 'max_price': Sätt alltid till null om inte budget/pris nämns.
+- 'min_alc' och 'max_alc': Sätt alltid till null om inte styrka/alkoholhalt nämns.
+- 'min_apk': Sätt alltid till null om inte billigaste/budget nämns.
 """
 
     payload = {
@@ -427,6 +432,31 @@ def run_ai_search():
         st.session_state.ai_filters = None
         st.session_state.ai_occasion = None
     else:
+        # Heuristic overrides to defend against LLM hallucination of price or alcohol limits
+        price_indicators = ["kr", "budget", "billig", "pris", "dyr", "lyx", "studentfest", "fattig", "pengar", "kostar", "snål", "spara"]
+        has_price_request = any(ind in user_input.lower() for ind in price_indicators)
+        
+        alc_indicators = ["%", "procent", "alkohol", "alkoholfri", "svag", "stark", "lätt", "nykter", "supa", "fylla", "styrka", "promille"]
+        has_alc_request = any(ind in user_input.lower() for ind in alc_indicators)
+        
+        # Snaps/sprit indicator checks
+        sprit_indicators = ["snaps", "nubbe", "vodka", "gin", "rom", "whiskey", "whisky", "tequila", "sprit", "likör", "snapsar", "nubbar"]
+        is_sprit_request = any(ind in user_input.lower() for ind in sprit_indicators)
+        
+        if is_sprit_request:
+            # Snap/Nubbe overrides: ensure Sprit category and clear any accidental alcohol limits
+            ai_result["categories"] = ["Sprit"]
+            ai_result["min_alc"] = None
+            ai_result["max_alc"] = None
+        else:
+            if not has_alc_request:
+                ai_result["min_alc"] = None
+                ai_result["max_alc"] = None
+                
+        if not has_price_request:
+            ai_result["max_price"] = None
+            ai_result["min_apk"] = None
+            
         st.session_state.ai_filters = ai_result
         st.session_state.ai_occasion = user_input
         st.session_state.ai_error = None
