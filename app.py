@@ -27,43 +27,65 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Premium clean CSS
+# Premium clean CSS inspired by Systembolaget (White and Green)
 st.markdown("""
 <style>
     .stApp {
-        background-color: #0b0f19;
-        color: #f1f5f9;
+        background-color: #ffffff;
+        color: #1a1a1a;
     }
+    
+    /* Elegant serif headings matching Systembolaget's style */
     h1, h2, h3 {
+        font-family: 'Georgia', 'Times New Roman', serif !important;
+        color: #00502a !important;
+        font-weight: 500 !important;
+    }
+    
+    /* Sidebar styling - light gray background */
+    [data-testid="stSidebar"] {
+        background-color: #f5f6f5 !important;
+        border-right: 1px solid #e5e7eb;
+    }
+    
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
         font-family: 'Inter', sans-serif !important;
+        color: #1a1a1a !important;
         font-weight: 600 !important;
     }
+    
+    /* Premium KPI Cards - Clean White and Green */
     .kpi-card {
         flex: 1;
-        background: #111827;
+        background: #ffffff;
         border-radius: 8px;
         padding: 1.25rem;
-        border: 1px solid #1f2937;
-        border-left: 4px solid #3b82f6;
-        transition: border-color 0.2s ease;
+        border: 1px solid #e5e7eb;
+        border-left: 5px solid #00502a;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
         margin-bottom: 0.5rem;
     }
-    .kpi-card:hover { border-color: #4b5563; }
-    .kpi-card.gold  { border-left-color: #d97706; }
-    .kpi-card.silver{ border-left-color: #6b7280; }
+    .kpi-card:hover { 
+        transform: translateY(-2px);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    .kpi-card.gold  { border-left-color: #e6b100; }
+    .kpi-card.silver{ border-left-color: #9ca3af; }
     .kpi-card.bronze{ border-left-color: #b45309; }
+    
     .kpi-title {
         font-size: 0.75rem;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        color: #9ca3af;
+        color: #6b7280;
         margin-bottom: 0.25rem;
     }
     .kpi-name {
         font-size: 1.1rem;
         font-weight: 600;
-        color: #ffffff;
+        color: #1a1a1a;
         margin-bottom: 0.5rem;
         white-space: nowrap;
         overflow: hidden;
@@ -72,28 +94,29 @@ st.markdown("""
     .kpi-value {
         font-size: 1.8rem;
         font-weight: 700;
-        color: #10b981;
+        color: #00502a;
         line-height: 1;
     }
     .kpi-value-unit {
         font-size: 0.85rem;
         font-weight: 500;
-        color: #9ca3af;
+        color: #6b7280;
     }
     .kpi-meta {
         margin-top: 0.5rem;
         font-size: 0.8rem;
-        color: #9ca3af;
+        color: #4b5563;
         display: flex;
         gap: 0.5rem;
         flex-wrap: wrap;
     }
     .kpi-badge {
-        background-color: #1f2937;
-        padding: 0.1rem 0.4rem;
+        background-color: #f3f4f6;
+        padding: 0.15rem 0.4rem;
         border-radius: 4px;
         font-size: 0.75rem;
-        border: 1px solid #374151;
+        border: 1px solid #e5e7eb;
+        color: #374151;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -527,7 +550,17 @@ def run_ai_search():
             st.session_state.sb_price = (price_options[0], price_options[-1])
 
 # ─── Header ──────────────────────────────────────────────────────────────────
-st.title("Systembolaget APK-Analysator")
+st.markdown("""
+<div style="display: flex; align-items: center; border-bottom: 1px solid #e5e7eb; padding-bottom: 1rem; margin-bottom: 1.5rem;">
+    <div style="background-color: #00502a; border: 2px solid #e6b100; border-radius: 4px; padding: 6px 12px; font-family: 'Inter', sans-serif; font-weight: 800; color: #e6b100; font-size: 0.9rem; text-align: center; text-transform: uppercase; letter-spacing: 0.05em; line-height: 1.1; box-shadow: 0 0 0 2px #00502a; display: inline-block; margin-right: 1.5rem;">
+        SYSTEM<br><span style="font-size: 0.75rem; letter-spacing: 0.15em;">BOLAGET</span>
+    </div>
+    <div>
+        <h1 style="margin: 0; font-family: Georgia, serif; font-size: 2.2rem; color: #00502a; font-weight: 500;">APK-Analysator</h1>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 today_str = datetime.date.today().strftime("%Y-%m-%d")
 st.markdown(
     f"Sök, filtrera och analysera prisvärdheten på Systembolagets sortiment baserat på "
@@ -770,10 +803,10 @@ with st.container():
         badges_html = "\n                ".join(badges)
         
         st.markdown(f"""
-        <div style="background-color: #111827; border: 1px solid #1f2937; border-left: 4px solid #10b981; border-radius: 8px; padding: 1rem; margin-top: 1rem; margin-bottom: 1rem;">
-            <div style="font-size: 0.8rem; font-weight: 600; color: #10b981; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;">🤖 AI-Sommelier Rekommendation</div>
-            <div style="font-size: 1.1rem; font-weight: 600; color: #ffffff; margin-bottom: 0.5rem;">Tillfälle: "{st.session_state.ai_occasion}"</div>
-            <div style="font-size: 0.95rem; color: #e2e8f0; line-height: 1.5; margin-bottom: 0.75rem;">{ai_f.get('explanation', '')}</div>
+        <div style="background-color: #f5f6f5; border: 1px solid #e5e7eb; border-left: 5px solid #00502a; border-radius: 8px; padding: 1.25rem; margin-top: 1rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            <div style="font-size: 0.8rem; font-weight: 700; color: #00502a; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;">🤖 AI-Sommelier Rekommendation</div>
+            <div style="font-size: 1.2rem; font-family: Georgia, serif; font-weight: 600; color: #1a1a1a; margin-bottom: 0.5rem;">Tillfälle: "{st.session_state.ai_occasion}"</div>
+            <div style="font-size: 0.95rem; color: #374151; line-height: 1.5; margin-bottom: 0.75rem; font-style: italic;">"{ai_f.get('explanation', '')}"</div>
             <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
                 {badges_html}
             </div>
